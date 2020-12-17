@@ -91,14 +91,6 @@ fn build_probe(
     flags.push_str(" -C embed-bitcode=yes");
 
     let version = build_kernel_version(kernel_source_dir)
-        .map(|mut v| {
-            if v.version >= 5 && v.patchlevel >= 7 {
-                v.patchlevel = 7;
-                v
-            } else {
-                v
-            }
-        })
         .map(|v| format!(r#"kernel_version="{}.{}""#, v.version, v.patchlevel))
         .unwrap_or_else(|_| r#"kernel_version="unknown""#.to_string());
 
