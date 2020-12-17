@@ -96,7 +96,7 @@ pub fn bpf_ktime_get_ns() -> u64 {
 // For tracing programs, safely attempt to read `mem::size_of::<T>()` bytes from
 // address src.
 #[inline]
-pub unsafe fn bpf_probe_read<T>(src: *const T) -> Result<T, i32> {
+pub unsafe fn bpf_probe_read<T>(src: *const T) -> Result<T, i64> {
     let mut v: MaybeUninit<T> = MaybeUninit::uninit();
     let ret = gen::bpf_probe_read(
         v.as_mut_ptr() as *mut c_void,

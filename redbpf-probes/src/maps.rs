@@ -16,17 +16,18 @@ use core::convert::TryInto;
 use core::default::Default;
 use core::marker::PhantomData;
 use core::mem;
+use core::slice;
 use cty::*;
 
-use crate::bindings::*;
-use crate::helpers::*;
+use crate::bindings;
+use crate::helpers;
 
 /// Hash table map.
 ///
 /// High level API for BPF_MAP_TYPE_HASH maps.
 #[repr(transparent)]
 pub struct HashMap<K, V> {
-    def: bpf_map_def,
+    def: bindings::bpf_map_def,
     _k: PhantomData<K>,
     _v: PhantomData<V>,
 }
@@ -35,8 +36,8 @@ impl<K, V> HashMap<K, V> {
     /// Creates a map with the specified maximum number of elements.
     pub const fn with_max_entries(max_entries: u32) -> Self {
         Self {
-            def: bpf_map_def {
-                type_: bpf_map_type_BPF_MAP_TYPE_HASH,
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_HASH,
                 key_size: mem::size_of::<K>() as u32,
                 value_size: mem::size_of::<V>() as u32,
                 max_entries,
@@ -51,7 +52,7 @@ impl<K, V> HashMap<K, V> {
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
         unsafe {
-            let value = bpf_map_lookup_elem(
+            let value = helpers::bpf_map_lookup_elem(
                 &mut self.def as *mut _ as *mut c_void,
                 key as *const _ as *const c_void,
             );
@@ -66,7 +67,7 @@ impl<K, V> HashMap<K, V> {
     #[inline]
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         unsafe {
-            let value = bpf_map_lookup_elem(
+            let value = helpers::bpf_map_lookup_elem(
                 &mut self.def as *mut _ as *mut c_void,
                 key as *const _ as *const c_void,
             );
@@ -82,11 +83,11 @@ impl<K, V> HashMap<K, V> {
     #[inline]
     pub fn set(&mut self, key: &K, value: &V) {
         unsafe {
-            bpf_map_update_elem(
+            helpers::bpf_map_update_elem(
                 &mut self.def as *mut _ as *mut c_void,
                 key as *const _ as *const c_void,
                 value as *const _ as *const c_void,
-                BPF_ANY.into(),
+                bindings::BPF_ANY.into(),
             );
         }
     }
@@ -95,7 +96,7 @@ impl<K, V> HashMap<K, V> {
     #[inline]
     pub fn delete(&mut self, key: &K) {
         unsafe {
-            bpf_map_delete_elem(
+            helpers::bpf_map_delete_elem(
                 &mut self.def as *mut _ as *mut c_void,
                 key as *const _ as *const c_void,
             );
@@ -155,7 +156,7 @@ impl From<PerfMapFlags> for u64 {
     #[inline]
     fn from(flags: PerfMapFlags) -> u64 {
         (flags.xdp_size as u64) << 32
-            | (flags.index.unwrap_or_else(|| BPF_F_CURRENT_CPU.try_into().unwrap()) as u64)
+            | (flags.index.unwrap_or_else(|| bindings::BPF_F_CURRENT_CPU.try_into().unwrap()) as u64)
     }
 }
 
@@ -169,7 +170,7 @@ impl From<PerfMapFlags> for u64 {
 /// exposes `XDP`-specific functionality.
 #[repr(transparent)]
 pub struct PerfMap<T> {
-    def: bpf_map_def,
+    def: bindings::bpf_map_def,
     _event: PhantomData<T>,
 }
 
@@ -177,8 +178,8 @@ impl<T> PerfMap<T> {
     /// Creates a perf map with the specified maximum number of elements.
     pub const fn with_max_entries(max_entries: u32) -> Self {
         Self {
-            def: bpf_map_def {
-                type_: bpf_map_type_BPF_MAP_TYPE_PERF_EVENT_ARRAY,
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_PERF_EVENT_ARRAY,
                 key_size: mem::size_of::<u32>() as u32,
                 value_size: mem::size_of::<u32>() as u32,
                 max_entries,
@@ -202,7 +203,7 @@ impl<T> PerfMap<T> {
     /// the additional xdp payload data specified in the given `PerfMapFlags`.
     #[inline]
     pub fn insert_with_flags<C>(&mut self, ctx: *mut C, data: &T, flags: PerfMapFlags) {
-        bpf_perf_event_output(
+        helpers::bpf_perf_event_output(
             ctx as *mut _ as *mut c_void,
             &mut self.def as *mut _ as *mut c_void,
             flags.into(),
@@ -214,7 +215,7 @@ impl<T> PerfMap<T> {
 
 #[repr(transparent)]
 pub struct RingBuffer {
-    def: bpf_map_def,
+    def: bindings::bpf_map_def,
 }
 
 pub struct RingBufferData<'a>(pub &'a mut [u8]);
@@ -222,8 +223,8 @@ pub struct RingBufferData<'a>(pub &'a mut [u8]);
 impl RingBuffer {
     pub const fn with_max_length(max_length: u32) -> Self {
         Self {
-            def: bpf_map_def {
-                type_: 27,
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_RINGBUF,
                 key_size: 0,
                 value_size: 0,
                 max_entries: max_length,
@@ -235,11 +236,10 @@ impl RingBuffer {
     // TODO: create a type for flags
     #[inline]
     pub fn output(&mut self, data: &[u8], flags: u64) -> Result<(), i64> {
-        let f: extern "C" fn (ringbuf: *mut cty::c_void, data: *mut cty::c_void, size: u64, flags: u64) -> cty::c_long = unsafe {
-            core::mem::transmute(130usize)
+        let s = &mut self.def as *mut _ as *mut c_void;
+        let r = unsafe {
+            helpers::gen::bpf_ringbuf_output(s, data.as_ptr() as *mut c_void, data.len() as u64, flags)
         };
-
-        let r = f(&mut self.def as *mut _ as *mut c_void, data.as_ptr() as *mut c_void, data.len() as u64, flags);
         if r < 0 {
             Err(r)
         } else {
@@ -248,59 +248,42 @@ impl RingBuffer {
     }
 
     #[inline]
-    pub fn reserve<'a>(&'a mut self, size: usize, flags: u64) -> Result<RingBufferData<'a>, ()> {
-        let f: extern "C" fn (ringbuf: *mut cty::c_void, size: u64, flags: u64) -> *mut cty::c_void = unsafe {
-            core::mem::transmute(131usize)
+    pub fn reserve<'a>(&'a mut self, size: u64, flags: u64) -> Result<RingBufferData<'a>, ()> {
+        let s = &mut self.def as *mut _ as *mut c_void;
+        let r = unsafe {
+            helpers::gen::bpf_ringbuf_reserve(s, size, flags)
         };
-
-        let r = f(&mut self.def as *mut _ as *mut c_void, size as u64, flags);
         if r.is_null() {
             Err(())
         } else {
-            Ok(RingBufferData(unsafe { core::slice::from_raw_parts_mut(r as *mut _, size) }))
+            Ok(RingBufferData(unsafe { slice::from_raw_parts_mut(r as *mut _, size as usize) }))
         }
     }
 
     // TODO: create a type for flags (distinct)
     #[inline]
     pub fn query(&mut self, flags: u64) -> u64 {
-        let f: extern "C" fn (ringbuf: *mut cty::c_void, flags: u64) -> u64 = unsafe {
-            core::mem::transmute(134usize)
-        };
-
-        f(&mut self.def as *mut _ as *mut c_void, flags)
+        unsafe { helpers::gen::bpf_ringbuf_query(&mut self.def as *mut _ as *mut c_void, flags) }
     }
 }
 
 impl<'a> RingBufferData<'a> {
     #[inline]
     pub fn submit(self, flags: u64) {
-        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
-            core::mem::transmute(132usize)
-        };
-
-        f(self.0.as_ptr() as *mut c_void, flags);
-        mem::forget(self)
+        unsafe { helpers::gen::bpf_ringbuf_submit(self.0.as_ptr() as *mut c_void, flags) };
+        mem::forget(self);
     }
 
     #[inline]
     pub fn discard(self, flags: u64) {
-        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
-            core::mem::transmute(133usize)
-        };
-
-        f(self.0.as_ptr() as *mut c_void, flags);
-        mem::forget(self)
+        unsafe { helpers::gen::bpf_ringbuf_discard(self.0.as_ptr() as *mut c_void, flags) };
+        mem::forget(self);
     }
 }
 
 impl<'a> Drop for RingBufferData<'a> {
     fn drop(&mut self) {
-        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
-            core::mem::transmute(133usize)
-        };
-
-        f(self.0.as_ptr() as *mut c_void, 0);
+        unsafe { helpers::gen::bpf_ringbuf_discard(self.0.as_ptr() as *mut c_void, 0) };
     }
 }
 
@@ -309,7 +292,7 @@ const BPF_MAX_STACK_DEPTH: usize = 127;
 
 #[repr(transparent)]
 pub struct StackTrace {
-    def: bpf_map_def
+    def: bindings::bpf_map_def
 }
 
 #[repr(C)]
@@ -320,8 +303,8 @@ struct BpfStackFrames {
 impl StackTrace {
     pub const fn with_max_entries(cap: u32) -> Self {
         StackTrace {
-            def: bpf_map_def {
-                type_: bpf_map_type_BPF_MAP_TYPE_STACK_TRACE,
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_STACK_TRACE,
                 key_size: mem::size_of::<u32>() as u32,
                 value_size: mem::size_of::<BpfStackFrames>() as u32,
                 max_entries: cap,
@@ -330,8 +313,8 @@ impl StackTrace {
         }
     }
 
-    pub unsafe fn stack_id(&mut self, ctx: *mut pt_regs, flag: u64) -> Result<c_int, c_int> {
-        let ret = bpf_get_stackid(ctx as _, &mut self.def as *mut _ as _, flag);
+    pub unsafe fn stack_id(&mut self, ctx: *mut bindings::pt_regs, flag: u64) -> Result<i64, i64> {
+        let ret = helpers::bpf_get_stackid(ctx as _, &mut self.def as *mut _ as _, flag);
         if ret >= 0 {
             Ok(ret)
         } else {
@@ -351,15 +334,15 @@ impl StackTrace {
 /// To jump to a program, see the `tail_call` method.
 #[repr(transparent)]
 pub struct ProgramArray {
-    def: bpf_map_def,
+    def: bindings::bpf_map_def,
 }
 
 impl ProgramArray {
     /// Creates a program map with the specified maximum number of programs.
     pub const fn with_max_entries(max_entries: u32) -> Self {
         Self {
-            def: bpf_map_def {
-                type_: bpf_map_type_BPF_MAP_TYPE_PROG_ARRAY,
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_PROG_ARRAY,
                 key_size: mem::size_of::<u32>() as u32,
                 value_size: mem::size_of::<u32>() as u32,
                 max_entries,
@@ -388,8 +371,8 @@ impl ProgramArray {
     /// (i.e. index is superior to the number of entries in the array), or
     /// if the maximum number of tail calls has been reached for this chain of
     /// programs.
-    pub unsafe fn tail_call<C>(&mut self, ctx: *mut C, index: u32) -> Result<(), i32> {
-        let ret = bpf_tail_call(ctx as *mut _, &mut self.def as *mut _ as *mut c_void, index);
+    pub unsafe fn tail_call<C>(&mut self, ctx: *mut C, index: u32) -> Result<(), i64> {
+        let ret = helpers::bpf_tail_call(ctx as *mut _, &mut self.def as *mut _ as *mut c_void, index);
         if ret < 0 {
             return Err(ret);
         }

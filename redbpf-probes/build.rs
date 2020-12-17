@@ -67,10 +67,19 @@ fn main() {
         "in_addr",
     ];
     let xdp_vars = ["ETH_.*", "IPPROTO_.*", "SOCK_.*", "SK_FL_.*", "AF_.*"];
+    let other_types = [
+        "tcp6_sock",
+        "tcp_sock",
+        "tcp_timewait_sock",
+        "tcp_request_sock",
+        "udp6_sock",
+        "btf_ptr",
+        "linux_binprm",
+    ];
 
     let mut builder = bpf_bindgen::builder().header("./include/redbpf_helpers.h");
 
-    for ty in types.iter().chain(xdp_types.iter()) {
+    for ty in types.iter().chain(xdp_types.iter()).chain(other_types.iter()) {
         builder = builder.whitelist_type(ty);
     }
 
