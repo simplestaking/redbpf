@@ -212,6 +212,98 @@ impl<T> PerfMap<T> {
     }
 }
 
+#[repr(transparent)]
+pub struct RingBuffer {
+    def: bpf_map_def,
+}
+
+pub struct RingBufferData<'a>(pub &'a mut [u8]);
+
+impl RingBuffer {
+    pub const fn with_max_length(max_length: u32) -> Self {
+        Self {
+            def: bpf_map_def {
+                type_: 27,
+                key_size: 0,
+                value_size: 0,
+                max_entries: max_length,
+                map_flags: 0,
+            },
+        }
+    }
+
+    // TODO: create a type for flags
+    #[inline]
+    pub fn output(&mut self, data: &[u8], flags: u64) -> Result<(), i64> {
+        let f: extern "C" fn (ringbuf: *mut cty::c_void, data: *mut cty::c_void, size: u64, flags: u64) -> cty::c_long = unsafe {
+            core::mem::transmute(130usize)
+        };
+
+        let r = f(&mut self.def as *mut _ as *mut c_void, data.as_ptr() as *mut c_void, data.len() as u64, flags);
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    pub fn reserve<'a>(&'a mut self, size: usize, flags: u64) -> Result<RingBufferData<'a>, ()> {
+        let f: extern "C" fn (ringbuf: *mut cty::c_void, size: u64, flags: u64) -> *mut cty::c_void = unsafe {
+            core::mem::transmute(131usize)
+        };
+
+        let r = f(&mut self.def as *mut _ as *mut c_void, size as u64, flags);
+        if r.is_null() {
+            Err(())
+        } else {
+            Ok(RingBufferData(unsafe { core::slice::from_raw_parts_mut(r as *mut _, size) }))
+        }
+    }
+
+    // TODO: create a type for flags (distinct)
+    #[inline]
+    pub fn query(&mut self, flags: u64) -> u64 {
+        let f: extern "C" fn (ringbuf: *mut cty::c_void, flags: u64) -> u64 = unsafe {
+            core::mem::transmute(134usize)
+        };
+
+        f(&mut self.def as *mut _ as *mut c_void, flags)
+    }
+}
+
+impl<'a> RingBufferData<'a> {
+    #[inline]
+    pub fn submit(self, flags: u64) {
+        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
+            core::mem::transmute(132usize)
+        };
+
+        f(self.0.as_ptr() as *mut c_void, flags);
+        mem::forget(self)
+    }
+
+    #[inline]
+    pub fn discard(self, flags: u64) {
+        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
+            core::mem::transmute(133usize)
+        };
+
+        f(self.0.as_ptr() as *mut c_void, flags);
+        mem::forget(self)
+    }
+}
+
+impl<'a> Drop for RingBufferData<'a> {
+    fn drop(&mut self) {
+        let f: extern "C" fn (data: *mut cty::c_void, flags: u64) = unsafe {
+            core::mem::transmute(133usize)
+        };
+
+        f(self.0.as_ptr() as *mut c_void, 0);
+    }
+}
+
 // TODO Use PERF_MAX_STACK_DEPTH
 const BPF_MAX_STACK_DEPTH: usize = 127;
 
