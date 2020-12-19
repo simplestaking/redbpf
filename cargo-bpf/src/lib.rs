@@ -15,8 +15,9 @@ pub mod bindgen;
 mod build;
 #[cfg(feature = "build")]
 mod llvm;
-#[cfg(feature = "build-c")]
-mod build_c;
+// looks broken
+//#[cfg(feature = "build-c")]
+//mod build_c;
 
 #[cfg(feature = "command-line")]
 mod load;
@@ -35,8 +36,8 @@ impl std::convert::From<std::io::Error> for CommandError {
 
 #[cfg(feature = "build")]
 pub use build::*;
-#[cfg(feature = "build-c")]
-pub use build_c::*;
+//#[cfg(feature = "build-c")]
+//pub use build_c::*;
 #[cfg(feature = "command-line")]
 pub use load::load;
 #[cfg(feature = "command-line")]

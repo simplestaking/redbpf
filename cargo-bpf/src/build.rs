@@ -181,9 +181,8 @@ pub fn build_ext(
     Ok(())
 }
 
-pub fn cmd_build(programs: Vec<String>, target_dir: PathBuf) -> Result<(), CommandError> {
-    let current_dir = std::env::current_dir().unwrap();
-    Ok(build(Path::new("cargo"), &current_dir, &target_dir, programs)?)
+pub fn cmd_build(package: &Path, programs: Vec<String>, target_dir: PathBuf) -> Result<(), CommandError> {
+    Ok(build(Path::new("cargo"), package, &target_dir, programs)?)
 }
 
 pub fn probe_files(package: &Path) -> Result<Vec<String>, Error> {

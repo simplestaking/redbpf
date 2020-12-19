@@ -1,0 +1,19 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Launch",
+            "program": "${workspaceFolder}/target/debug/cargo-bpf",
+            "args": ["bpf", "build", "/home/vscode/workspace/simplestaking/tezedge-debugger/sniffer"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "KERNEL_SOURCE": "/home/vscode/workspace/simplestaking/linux-5.8.18"
+            }
+        }
+    ]
+}

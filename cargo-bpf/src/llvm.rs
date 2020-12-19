@@ -101,7 +101,7 @@ pub unsafe fn compile(input: &Path, output: &Path, bc_output: Option<&Path>) -> 
     ret
 }
 
-pub unsafe fn process_ir(context: LLVMContextRef, module: LLVMModuleRef) -> Result<()> {
+unsafe fn process_ir(context: LLVMContextRef, module: LLVMModuleRef) -> Result<()> {
     let builder = LLVMCreateBuilderInContext(context);
 
     let no_inline = CString::new("noinline").unwrap();

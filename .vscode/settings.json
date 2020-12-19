@@ -1,5 +1,7 @@
 {
     "cSpell.words": [
+        "bindgen",
+        "llvm",
         "ringbuf",
         "sockaddr"
     ]
