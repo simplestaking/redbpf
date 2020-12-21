@@ -1,8 +1,24 @@
 {
     "cSpell.words": [
+        "Evented",
         "bindgen",
+        "bpfsys",
+        "epoll",
+        "errno",
+        "libbpf",
+        "libc",
+        "libelf",
+        "linfo",
         "llvm",
+        "musl",
+        "netlink",
+        "nlattr",
+        "reregister",
         "ringbuf",
-        "sockaddr"
+        "rustc",
+        "sockaddr",
+        "stddef",
+        "sysconf",
+        "ulong"
     ]
 }

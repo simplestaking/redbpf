@@ -75,11 +75,14 @@ fn main() {
         .file("libbpf/src/bpf.c")
         .file("libbpf/src/bpf_prog_linfo.c")
         .file("libbpf/src/btf.c")
+        .file("libbpf/src/btf_dump.c")
+        .file("libbpf/src/hashmap.c")
         .file("libbpf/src/libbpf.c")
         .file("libbpf/src/libbpf_errno.c")
         .file("libbpf/src/libbpf_probes.c")
         .file("libbpf/src/netlink.c")
         .file("libbpf/src/nlattr.c")
+        .file("libbpf/src/ringbuf.c")
         .file("libbpf/src/str_error.c")
         .file("libbpf/src/xsk.c")
         .file("bcc/libbpf.c")
@@ -88,6 +91,7 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("libbpf_xdp.h")
+        .header("libbpf/src/libbpf.h")
         .clang_arg("-Ilibbpf/include/uapi")
         .clang_arg("-Ilibbpf/include")
         .clang_arg("-Ibcc")
@@ -95,17 +99,6 @@ fn main() {
         .expect("Unable to generate bindings");
     bindings
         .write_to_file(out_path.join("libbpf_bindings.rs"))
-        .expect("Couldn't write bindings!");
-    let bindings = bindgen::Builder::default()
-        .header("libbpf/src/libbpf.h")
-        .clang_arg("-Ilibbpf/include/uapi")
-        .clang_arg("-Ilibbpf/include")
-        .clang_arg("-Ibcc")
-        .whitelist_type("bpf_map_def")
-        .generate()
-        .expect("Unable to generate bindings");
-    bindings
-        .write_to_file(out_path.join("libbpf_map_def.rs"))
         .expect("Couldn't write bindings!");
     let bindings = bindgen::Builder::default()
         .header("bcc/perf_reader.h")

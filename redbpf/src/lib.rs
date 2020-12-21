@@ -52,6 +52,7 @@ mod perf;
 mod symbols;
 pub mod sys;
 pub mod xdp;
+pub mod ringbuf;
 
 pub use bpf_sys::uname;
 use bpf_sys::{
@@ -137,7 +138,7 @@ pub struct XDP {
 pub struct Map {
     pub name: String,
     pub kind: u32,
-    fd: RawFd,
+    pub fd: RawFd,
     config: bpf_map_def,
     section_data: bool,
 }
