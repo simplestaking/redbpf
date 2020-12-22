@@ -10,15 +10,20 @@
         "libelf",
         "linfo",
         "llvm",
+        "mmap",
+        "munmap",
         "musl",
         "netlink",
         "nlattr",
+        "redbpf",
+        "repr",
         "reregister",
         "ringbuf",
         "rustc",
         "sockaddr",
         "stddef",
         "sysconf",
-        "ulong"
+        "ulong",
+        "userspace"
     ]
 }

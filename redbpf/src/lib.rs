@@ -138,7 +138,7 @@ pub struct XDP {
 pub struct Map {
     pub name: String,
     pub kind: u32,
-    pub fd: RawFd,
+    fd: RawFd,
     config: bpf_map_def,
     section_data: bool,
 }

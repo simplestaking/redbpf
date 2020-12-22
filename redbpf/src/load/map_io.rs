@@ -17,7 +17,7 @@ use tokio::io::PollEvented;
 
 use crate::{Event, PerfMap};
 
-pub struct MapIo(RawFd);
+pub struct MapIo(pub RawFd);
 
 impl Evented for MapIo {
     fn register(
