@@ -171,4 +171,12 @@ impl Registers {
             (*self.ctx).__bindgen_anon_1.user_regs.pc
         }
     }
+
+    #[inline]
+    pub fn is_syscall_success(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            ((*self.ctx).r10 as i64) != -1
+        }
+    }
 }
