@@ -93,12 +93,43 @@ pub fn bpf_ktime_get_ns() -> u64 {
     unsafe { gen::bpf_ktime_get_ns() }
 }
 
-// For tracing programs, safely attempt to read `mem::size_of::<T>()` bytes from
-// address src.
+/// For tracing programs, safely attempt to read `mem::size_of::<T>()` bytes from
+/// address src.
+/// Deprecated, use bpf_probe_read_user or bpf_probe_read_kernel instead
 #[inline]
 pub unsafe fn bpf_probe_read<T>(src: *const T) -> Result<T, i64> {
     let mut v: MaybeUninit<T> = MaybeUninit::uninit();
     let ret = gen::bpf_probe_read(
+        v.as_mut_ptr() as *mut c_void,
+        size_of::<T>() as u32,
+        src as *const c_void,
+    );
+    if ret < 0 {
+        return Err(ret);
+    }
+
+    Ok(v.assume_init())
+}
+
+#[inline]
+pub unsafe fn bpf_probe_read_user<T>(src: *const T) -> Result<T, i64> {
+    let mut v: MaybeUninit<T> = MaybeUninit::uninit();
+    let ret = gen::bpf_probe_read_user(
+        v.as_mut_ptr() as *mut c_void,
+        size_of::<T>() as u32,
+        src as *const c_void,
+    );
+    if ret < 0 {
+        return Err(ret);
+    }
+
+    Ok(v.assume_init())
+}
+
+#[inline]
+pub unsafe fn bpf_probe_read_kernel<T>(src: *const T) -> Result<T, i64> {
+    let mut v: MaybeUninit<T> = MaybeUninit::uninit();
+    let ret = gen::bpf_probe_read_kernel(
         v.as_mut_ptr() as *mut c_void,
         size_of::<T>() as u32,
         src as *const c_void,
