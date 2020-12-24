@@ -173,7 +173,7 @@ impl Stream for RingBuffer {
 
             let data_offset = consumer_pos + HEADER_SIZE;
             let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
-            consumer_pos = data_offset + length;
+            consumer_pos = data_offset + (length + 7) / 8 * 8;
 
             // update it when user drop the `RingBufferData`
             self.consumer_pos.store(consumer_pos, Ordering::Release);
