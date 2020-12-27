@@ -48,6 +48,21 @@ impl<K, V> HashMap<K, V> {
         }
     }
 
+    /// Creates a per-cpu map with the specified maximum number of elements.
+    pub const fn with_max_entries_percpu(max_entries: u32) -> Self {
+        Self {
+            def: bindings::bpf_map_def {
+                type_: bindings::bpf_map_type_BPF_MAP_TYPE_PERCPU_HASH,
+                key_size: mem::size_of::<K>() as u32,
+                value_size: mem::size_of::<V>() as u32,
+                max_entries,
+                map_flags: 0,
+            },
+            _k: PhantomData,
+            _v: PhantomData,
+        }
+    }
+
     /// Returns a reference to the value corresponding to the key.
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {

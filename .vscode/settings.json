@@ -15,6 +15,7 @@
         "musl",
         "netlink",
         "nlattr",
+        "percpu",
         "redbpf",
         "repr",
         "reregister",
