@@ -1,5 +1,4 @@
 use std::{
-    os::unix::io::RawFd,
     io,
     ptr,
     slice,
@@ -48,6 +47,18 @@ pub struct RingBuffer {
     data: Box<[AtomicUsize]>,
 }
 
+pub struct RingBufferDump<'a> {
+    pub data: &'a [u8],
+    pub pos: usize,
+    busy: Arc<AtomicBool>,
+}
+
+impl<'a> Drop for RingBufferDump<'a> {
+    fn drop(&mut self) {
+        self.busy.store(false, Ordering::SeqCst);
+    }
+}
+
 impl RingBuffer {
     /// Create the buffer from redbpf `Map` object.
     pub fn from_map(map: &crate::Map) -> Result<Self, io::Error> {
@@ -58,7 +69,7 @@ impl RingBuffer {
     }
 
     /// Create the buffer, `fd` is the file descriptor, `max_length` should be power of two.
-    pub fn new(fd: RawFd, max_length: usize) -> Result<Self, io::Error> {
+    pub fn new(fd: i32, max_length: usize) -> Result<Self, io::Error> {
         debug_assert_eq!(max_length & (max_length - 1), 0);
 
         // it is a constant, most likely 0x1000
@@ -119,11 +130,22 @@ impl RingBuffer {
             poll: PollEvented::new(MapIo(fd))?,
             lock: Arc::new(AtomicBool::new(false)),
             mask: max_length - 1,
-            page_size: page_size,
-            consumer_pos: consumer_pos,
-            producer_pos: producer_pos,
-            data: data,
+            page_size,
+            consumer_pos,
+            producer_pos,
+            data,
         })
+    }
+
+    pub fn dump(&self) -> RingBufferDump<'_> {
+        self.lock.store(true, Ordering::SeqCst);
+        let producer_pos = self.producer_pos.load(Ordering::Acquire);
+        let data = unsafe { slice::from_raw_parts(self.data.as_ptr() as *const u8, producer_pos) };
+        RingBufferDump {
+            data,
+            pos: self.consumer_pos.load(Ordering::Acquire),
+            busy: self.lock.clone(),
+        }
     }
 }
 
@@ -175,7 +197,7 @@ impl Stream for RingBuffer {
             let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
             consumer_pos = data_offset + (length + 7) / 8 * 8;
 
-            // update it when user drop the `RingBufferData`
+            // TODO: update it when user drop the `RingBufferData`
             self.consumer_pos.store(consumer_pos, Ordering::Release);
 
             if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
@@ -185,7 +207,7 @@ impl Stream for RingBuffer {
                 self.lock.store(true, Ordering::SeqCst);
                 return Poll::Ready(Some(RingBufferData {
                     data: ((self.data.as_ptr() as usize) + data_offset) as _,
-                    length: length,
+                    length,
                     end_position: consumer_pos,
                     busy: self.lock.clone(),
                 }));

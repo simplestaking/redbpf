@@ -40,6 +40,8 @@ for kprobe in loader.kprobes_mut() {
 */
 #![deny(clippy::all)]
 #![allow(non_upper_case_globals)]
+#![cfg(any(unix, doc))]
+#![feature(atomic_mut_ptr)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -52,6 +54,7 @@ mod perf;
 mod symbols;
 pub mod sys;
 pub mod xdp;
+#[cfg(feature = "load")]
 pub mod ringbuf;
 
 pub use bpf_sys::uname;
@@ -179,7 +182,6 @@ pub struct RelocationInfo {
 }
 
 impl Program {
-    #[allow(clippy::unnecessary_wraps)]
     fn new(kind: &str, name: &str, code: &[u8]) -> Result<Program> {
         let code = zero::read_array(code).to_vec();
         let name = name.to_string();
