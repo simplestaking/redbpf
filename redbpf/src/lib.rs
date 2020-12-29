@@ -337,7 +337,7 @@ impl KProbe {
                 ev_name.as_ptr(),
                 cname.as_ptr(),
                 offset,
-                0,
+                128,
             )
         };
 

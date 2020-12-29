@@ -47,15 +47,15 @@ pub struct RingBuffer {
     data: Box<[AtomicUsize]>,
 }
 
-pub struct RingBufferDump<'a> {
-    pub data: &'a [u8],
+pub struct RingBufferDump {
+    data: *const u8,
+    length: usize,
     pub pos: usize,
-    busy: Arc<AtomicBool>,
 }
 
-impl<'a> Drop for RingBufferDump<'a> {
-    fn drop(&mut self) {
-        self.busy.store(false, Ordering::SeqCst);
+impl AsRef<[u8]> for RingBufferDump {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.data, self.length) }
     }
 }
 
@@ -137,14 +137,13 @@ impl RingBuffer {
         })
     }
 
-    pub fn dump(&self) -> RingBufferDump<'_> {
+    pub fn dump(&self) -> RingBufferDump {
         self.lock.store(true, Ordering::SeqCst);
         let producer_pos = self.producer_pos.load(Ordering::Acquire);
-        let data = unsafe { slice::from_raw_parts(self.data.as_ptr() as *const u8, producer_pos) };
         RingBufferDump {
-            data,
+            data: self.data.as_ptr() as *const u8,
+            length: producer_pos,
             pos: self.consumer_pos.load(Ordering::Acquire),
-            busy: self.lock.clone(),
         }
     }
 }
