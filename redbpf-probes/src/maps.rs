@@ -233,7 +233,7 @@ pub struct RingBuffer {
     def: bindings::bpf_map_def,
 }
 
-pub struct RingBufferData<'a>(pub &'a mut [u8]);
+pub struct RingBufferData(&'static mut [u8]);
 
 impl RingBuffer {
     pub const fn with_max_length(max_length: u32) -> Self {
@@ -263,7 +263,7 @@ impl RingBuffer {
     }
 
     #[inline]
-    pub fn reserve<'a>(&'a mut self, size: u64, flags: u64) -> Result<RingBufferData<'a>, ()> {
+    pub fn reserve(&mut self, size: u64, flags: u64) -> Result<RingBufferData, ()> {
         let s = &mut self.def as *mut _ as *mut c_void;
         let r = unsafe {
             helpers::gen::bpf_ringbuf_reserve(s, size, flags)
@@ -282,7 +282,13 @@ impl RingBuffer {
     }
 }
 
-impl<'a> RingBufferData<'a> {
+impl AsMut<[u8]> for RingBufferData {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
+impl RingBufferData {
     #[inline]
     pub fn submit(self, flags: u64) {
         unsafe { helpers::gen::bpf_ringbuf_submit(self.0.as_ptr() as *mut c_void, flags) };
@@ -296,7 +302,7 @@ impl<'a> RingBufferData<'a> {
     }
 }
 
-impl<'a> Drop for RingBufferData<'a> {
+impl Drop for RingBufferData {
     fn drop(&mut self) {
         unsafe { helpers::gen::bpf_ringbuf_discard(self.0.as_ptr() as *mut c_void, 0) };
     }
