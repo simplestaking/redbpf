@@ -16,21 +16,22 @@ use crate::load::map_io::MapIo;
 /// TODO: `RingBuffer` unable to read more data until this is not consumed,
 /// it is possible to fix, and consume data in parallel.
 pub struct RingBufferData {
-    data: *const u8,
-    length: usize,
+    data: Box<[u8]>,
     end_position: usize,
     busy: Arc<AtomicBool>,
 }
 
 impl AsRef<[u8]> for RingBufferData {
     fn as_ref(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.data, self.length) }
+        self.data.as_ref()
     }
 }
 
 impl Drop for RingBufferData {
     fn drop(&mut self) {
         let _ = self.end_position;
+        let data = mem::replace(&mut self.data, Box::new([]));
+        mem::forget(data);
         self.busy.store(false, Ordering::SeqCst);
     }
 }
@@ -138,7 +139,6 @@ impl RingBuffer {
     }
 
     pub fn dump(&self) -> RingBufferDump {
-        self.lock.store(true, Ordering::SeqCst);
         let producer_pos = self.producer_pos.load(Ordering::Acquire);
         RingBufferDump {
             data: self.data.as_ptr() as *const u8,
@@ -206,9 +206,12 @@ impl Stream for RingBuffer {
             }
             if !discard {
                 self.lock.store(true, Ordering::SeqCst);
+                let data = unsafe {
+                    let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
+                    Box::from_raw(slice as *mut [u8])
+                };
                 return Poll::Ready(Some(RingBufferData {
-                    data: ((self.data.as_ptr() as usize) + data_offset) as _,
-                    length,
+                    data,
                     end_position: consumer_pos,
                     busy: self.lock.clone(),
                 }));
