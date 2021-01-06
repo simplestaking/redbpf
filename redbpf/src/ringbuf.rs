@@ -173,15 +173,14 @@ impl Stream for RingBuffer {
             return Poll::Pending;
         }
 
-        let ready = Ready::readable();
-        if let Poll::Pending = self.poll.poll_read_ready(cx, ready) {
+        if let Poll::Pending = self.poll.poll_read_ready(cx, Ready::readable()) {
             return Poll::Pending;
         }
 
         let mut consumer_pos = self.consumer_pos.load(Ordering::Acquire) & self.mask;
         loop {
-            let producer_pos = self.producer_pos.load(Ordering::Acquire);
-            if consumer_pos >= producer_pos {
+            if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
+                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
                 return Poll::Pending;
             }
 
@@ -191,6 +190,7 @@ impl Stream for RingBuffer {
             let length = length & ((1 << 32) - 1);
 
             if length & BUSY_BIT != 0 {
+                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
                 return Poll::Pending;
             }
 
@@ -202,7 +202,7 @@ impl Stream for RingBuffer {
             self.consumer_pos.store(consumer_pos, Ordering::Release);
 
             if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
-                self.poll.clear_read_ready(cx, ready).unwrap();
+                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
             }
             if !discard {
                 self.lock.store(true, Ordering::SeqCst);
