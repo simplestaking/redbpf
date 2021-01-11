@@ -169,11 +169,12 @@ impl Stream for RingBuffer {
         const DISCARD_BIT: usize = 1 << 30;
         const HEADER_SIZE: usize = 8;
 
-        if self.lock.load(Ordering::SeqCst) {
+        if let Poll::Pending = self.poll.poll_read_ready(cx, Ready::readable()) {
             return Poll::Pending;
         }
 
-        if let Poll::Pending = self.poll.poll_read_ready(cx, Ready::readable()) {
+        if self.lock.load(Ordering::SeqCst) {
+            self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
             return Poll::Pending;
         }
 
@@ -201,9 +202,6 @@ impl Stream for RingBuffer {
             // TODO: update it when user drop the `RingBufferData`
             self.consumer_pos.store(consumer_pos, Ordering::Release);
 
-            if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
-                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
-            }
             if !discard {
                 self.lock.store(true, Ordering::SeqCst);
                 let data = unsafe {
