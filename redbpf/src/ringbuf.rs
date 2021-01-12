@@ -178,26 +178,28 @@ impl Stream for RingBuffer {
             return Poll::Pending;
         }
 
-        let mut consumer_pos = self.consumer_pos.load(Ordering::Acquire) & self.mask;
+        let mut consumer_pos = self.consumer_pos.load(Ordering::Acquire);
         loop {
             if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
                 self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
                 return Poll::Pending;
             }
 
-            let reduced_pos = consumer_pos / mem::size_of::<AtomicUsize>();
-            let length = self.data[reduced_pos].load(Ordering::Acquire);
-            // keep only 32 bits
-            let length = length & ((1 << 32) - 1);
+            let (length, data_offset) = {
+                let masked_pos = consumer_pos & self.mask;
+                let reduced_pos = masked_pos / mem::size_of::<AtomicUsize>();
+                let length = self.data[reduced_pos].load(Ordering::Acquire);
+                // keep only 32 bits
+                (length & 0xffffffff, masked_pos + HEADER_SIZE)
+            };
 
             if length & BUSY_BIT != 0 {
                 self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
                 return Poll::Pending;
             }
 
-            let data_offset = consumer_pos + HEADER_SIZE;
             let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
-            consumer_pos = data_offset + (length + 7) / 8 * 8;
+            consumer_pos += HEADER_SIZE + (length + 7) / 8 * 8;
 
             // TODO: update it when user drop the `RingBufferData`
             self.consumer_pos.store(consumer_pos, Ordering::Release);
