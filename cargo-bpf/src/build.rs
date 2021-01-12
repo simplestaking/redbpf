@@ -86,7 +86,21 @@ fn build_probe(
 
     let mut flags = String::new();
     if let Ok(rf) = std::env::var("RUSTFLAGS") {
-        flags.push_str(&rf);
+        let mut rf = rf.split_whitespace();
+        let mut filtered_rf = vec![];
+        while let Some(f) = rf.next() {
+            if f == "-Z" {
+                if let Some(next) = rf.next() {
+                    if !next.starts_with("sanitizer=") {
+                        filtered_rf.push(f);
+                        filtered_rf.push(next);
+                    }
+                }
+            } else {
+                filtered_rf.push(f);
+            }
+        }
+        flags.push_str(&filtered_rf.join(" "));
     }
     flags.push_str(" -C embed-bitcode=yes");
 
