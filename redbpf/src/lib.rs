@@ -329,8 +329,12 @@ impl KProbe {
     /// }
     /// ```
     pub fn attach_kprobe(&mut self, fn_name: &str, offset: u64) -> Result<()> {
+        self.attach_kprobe_namespace("", fn_name, offset)
+    }
+
+    pub fn attach_kprobe_namespace(&mut self, namespace: &str, fn_name: &str, offset: u64) -> Result<()> {
         let fd = self.common.fd.ok_or(Error::ProgramNotLoaded)?;
-        let ev_name = CString::new(format!("{}{}", fn_name, self.attach_type)).unwrap();
+        let ev_name = CString::new(format!("{}{}{}", namespace, fn_name, self.attach_type)).unwrap();
         let cname = CString::new(fn_name).unwrap();
         let pfd = unsafe {
             bpf_sys::bpf_attach_kprobe(
