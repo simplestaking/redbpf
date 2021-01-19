@@ -354,6 +354,18 @@ impl KProbe {
         }
     }
 
+    pub fn detach_kprobe_namespace(&mut self, namespace: &str, fn_name: &str) -> Result<()> {
+        // bpf_detach_probe
+        let ev_name = CString::new(format!("{}{}{}", namespace, fn_name, self.attach_type)).unwrap();
+        let r = unsafe { bpf_sys::bpf_detach_kprobe(ev_name.as_ptr()) };
+
+        if r < 0 {
+            Err(Error::BPF)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn name(&self) -> String {
         self.common.name.to_string()
     }
