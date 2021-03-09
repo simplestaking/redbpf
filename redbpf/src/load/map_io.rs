@@ -6,55 +6,23 @@
 // copied, modified, or distributed except according to those terms.
 
 use futures::prelude::*;
-use mio::unix::EventedFd;
-use mio::{Evented, PollOpt, Ready, Token};
-use std::io;
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
 use std::slice;
 use std::task::{Context, Poll};
-use tokio::io::PollEvented;
+use tokio::io::{Interest, unix::AsyncFd};
 
 use crate::{Event, PerfMap};
 
-pub struct MapIo(pub RawFd);
-
-impl Evented for MapIo {
-    fn register(
-        &self,
-        poll: &mio::Poll,
-        token: Token,
-        interest: Ready,
-        opts: PollOpt,
-    ) -> io::Result<()> {
-        EventedFd(&self.0).register(poll, token, interest, opts)
-    }
-
-    fn reregister(
-        &self,
-        poll: &mio::Poll,
-        token: Token,
-        interest: Ready,
-        opts: PollOpt,
-    ) -> io::Result<()> {
-        EventedFd(&self.0).reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        EventedFd(&self.0).deregister(poll)
-    }
-}
-
 pub struct PerfMessageStream {
-    poll: PollEvented<MapIo>,
+    poll: AsyncFd<RawFd>,
     map: PerfMap,
     name: String,
 }
 
 impl PerfMessageStream {
     pub fn new(name: String, map: PerfMap) -> Self {
-        let io = MapIo(map.fd);
-        let poll = PollEvented::new(io).unwrap();
+        let poll = AsyncFd::with_interest(map.fd, Interest::READABLE).unwrap();
         PerfMessageStream { poll, map, name }
     }
 
@@ -84,13 +52,17 @@ impl Stream for PerfMessageStream {
     type Item = Vec<Box<[u8]>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let ready = Ready::readable();
-        if let Poll::Pending = self.poll.poll_read_ready(cx, ready) {
-            return Poll::Pending;
+        match self.poll.poll_read_ready(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(mut guard)) => {
+                guard.clear_ready();
+                Poll::Ready(Some(self.read_messages()))
+            },
+            Poll::Ready(Err(error)) => {
+                log::error!("{}", error);
+                Poll::Ready(None)
+            },
         }
 
-        let messages = self.read_messages();
-        self.poll.clear_read_ready(cx, ready).unwrap();
-        Poll::Ready(Some(messages))
     }
 }

@@ -21,7 +21,7 @@ pub fn load(
     uprobe_path: Option<&str>,
     pid: Option<i32>,
 ) -> Result<(), CommandError> {
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     runtime.block_on(async {
         // Load all the programs and maps included in the program
         let mut loader = Loader::load_file(&program).expect("error loading file");

@@ -3,14 +3,13 @@ use std::{
     ptr,
     slice,
     mem,
-    sync::{atomic::{AtomicUsize, AtomicBool, Ordering}, Arc},
+    sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll},
     pin::Pin,
+    os::unix::io::AsRawFd,
 };
-use mio::Ready;
 use futures::Stream;
-use tokio::io::PollEvented;
-use crate::load::map_io::MapIo;
+use tokio::io::{Interest, unix::AsyncFd};
 
 /// The data read from the `RingBuffer`.
 /// TODO: `RingBuffer` unable to read more data until this is not consumed,
@@ -18,7 +17,6 @@ use crate::load::map_io::MapIo;
 pub struct RingBufferData {
     data: Box<[u8]>,
     end_position: usize,
-    busy: Arc<AtomicBool>,
 }
 
 impl AsRef<[u8]> for RingBufferData {
@@ -32,20 +30,30 @@ impl Drop for RingBufferData {
         let _ = self.end_position;
         let data = mem::replace(&mut self.data, Box::new([]));
         mem::forget(data);
-        self.busy.store(false, Ordering::SeqCst);
     }
 }
 
 /// The `RingBuffer` userspace object.
 pub struct RingBuffer {
-    poll: PollEvented<MapIo>,
-    lock: Arc<AtomicBool>,
+    inner: AsyncFd<RingBufferInner>,
+    depth: usize,
+}
+
+struct RingBufferInner {
+    fd: i32,
     mask: usize,
     page_size: usize,
     // pointers to shared memory
     consumer_pos: Box<AtomicUsize>,
     producer_pos: Box<AtomicUsize>,
+    consumer_pos_value: usize,
     data: Box<[AtomicUsize]>,
+}
+
+impl AsRawFd for RingBufferInner {
+    fn as_raw_fd(&self) -> i32 {
+        self.fd.clone()
+    }
 }
 
 pub struct RingBufferDump {
@@ -70,7 +78,19 @@ impl RingBuffer {
     }
 
     /// Create the buffer, `fd` is the file descriptor, `max_length` should be power of two.
-    pub fn new(fd: i32, max_length: usize) -> Result<Self, io::Error> {
+    pub fn new(fd: i32, max_length: usize) -> io::Result<Self> {
+        let inner = RingBufferInner::new(fd, max_length)?;
+        let inner = AsyncFd::with_interest(inner, Interest::READABLE)?;
+        Ok(RingBuffer { inner, depth: 0 })
+    }
+
+    pub fn dump(&self) -> RingBufferDump {
+        self.inner.get_ref().dump()
+    }
+}
+
+impl RingBufferInner {
+    fn new(fd: i32, max_length: usize) -> io::Result<Self> {
         debug_assert_eq!(max_length & (max_length - 1), 0);
 
         // it is a constant, most likely 0x1000
@@ -127,28 +147,76 @@ impl RingBuffer {
         };
 
         log::info!("new RingBuffer: fd: {}, page_size: 0x{:016x}, mask: 0x{:016x}", fd, page_size, max_length - 1);
-        Ok(RingBuffer {
-            poll: PollEvented::new(MapIo(fd))?,
-            lock: Arc::new(AtomicBool::new(false)),
+        Ok(RingBufferInner {
+            fd,
             mask: max_length - 1,
             page_size,
             consumer_pos,
             producer_pos,
+            consumer_pos_value: 0,
             data,
         })
     }
 
-    pub fn dump(&self) -> RingBufferDump {
-        let producer_pos = self.producer_pos.load(Ordering::Acquire);
+    fn dump(&self) -> RingBufferDump {
         RingBufferDump {
             data: self.data.as_ptr() as *const u8,
-            length: producer_pos,
-            pos: self.consumer_pos.load(Ordering::Acquire),
+            length: self.producer_pos.load(Ordering::SeqCst),
+            pos: self.consumer_pos.load(Ordering::SeqCst),
+        }
+    }
+
+    fn update_pos(&mut self) {
+        self.consumer_pos.store(self.consumer_pos_value, Ordering::Release);
+    }
+
+    fn read(&mut self) -> io::Result<RingBufferData> {
+        const BUSY_BIT: usize = 1 << 31;
+        const DISCARD_BIT: usize = 1 << 30;
+        const HEADER_SIZE: usize = 8;
+
+        let would_block_error = io::Error::new(io::ErrorKind::WouldBlock, "");
+
+        self.update_pos();
+
+        loop {
+            let pr_pos = self.producer_pos.load(Ordering::Acquire);
+            if self.consumer_pos_value >= pr_pos {
+                self.update_pos();
+                break Err(would_block_error);
+            }
+
+            let (length, data_offset) = {
+                let masked_pos = self.consumer_pos_value & self.mask;
+                let reduced_pos = masked_pos / mem::size_of::<AtomicUsize>();
+                let length = self.data[reduced_pos].load(Ordering::Acquire);
+                // keep only 32 bits
+                (length & 0xffffffff, masked_pos + HEADER_SIZE)
+            };
+
+            if length & BUSY_BIT != 0 {
+                self.update_pos();
+                break Err(would_block_error);
+            }
+
+            let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
+            self.consumer_pos_value += HEADER_SIZE + (length + 7) / 8 * 8;
+
+            if !discard {
+                let data = unsafe {
+                    let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
+                    Box::from_raw(slice as *mut [u8])
+                };
+                break Ok(RingBufferData {
+                    data,
+                    end_position: self.consumer_pos_value,
+                });
+            }
         }
     }
 }
 
-impl Drop for RingBuffer {
+impl Drop for RingBufferInner {
     fn drop(&mut self) {
         let p = mem::replace(&mut self.consumer_pos, Box::new(AtomicUsize::new(0)));
         let q = mem::replace(&mut self.producer_pos, Box::new(AtomicUsize::new(0)));
@@ -164,58 +232,35 @@ impl Drop for RingBuffer {
 impl Stream for RingBuffer {
     type Item = RingBufferData;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        const BUSY_BIT: usize = 1 << 31;
-        const DISCARD_BIT: usize = 1 << 30;
-        const HEADER_SIZE: usize = 8;
-
-        if let Poll::Pending = self.poll.poll_read_ready(cx, Ready::readable()) {
-            return Poll::Pending;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        if self.depth > 1 {
+            log::warn!("depth: {}", self.depth);
         }
-
-        if self.lock.load(Ordering::SeqCst) {
-            self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
-            return Poll::Pending;
-        }
-
-        let mut consumer_pos = self.consumer_pos.load(Ordering::Acquire);
-        loop {
-            if consumer_pos >= self.producer_pos.load(Ordering::Acquire) {
-                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
-                return Poll::Pending;
-            }
-
-            let (length, data_offset) = {
-                let masked_pos = consumer_pos & self.mask;
-                let reduced_pos = masked_pos / mem::size_of::<AtomicUsize>();
-                let length = self.data[reduced_pos].load(Ordering::Acquire);
-                // keep only 32 bits
-                (length & 0xffffffff, masked_pos + HEADER_SIZE)
-            };
-
-            if length & BUSY_BIT != 0 {
-                self.poll.clear_read_ready(cx, Ready::readable()).unwrap();
-                return Poll::Pending;
-            }
-
-            let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
-            consumer_pos += HEADER_SIZE + (length + 7) / 8 * 8;
-
-            // TODO: update it when user drop the `RingBufferData`
-            self.consumer_pos.store(consumer_pos, Ordering::Release);
-
-            if !discard {
-                self.lock.store(true, Ordering::SeqCst);
-                let data = unsafe {
-                    let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
-                    Box::from_raw(slice as *mut [u8])
-                };
-                return Poll::Ready(Some(RingBufferData {
-                    data,
-                    end_position: consumer_pos,
-                    busy: self.lock.clone(),
-                }));
-            }
+        match self.inner.poll_read_ready_mut(cx) {
+            Poll::Pending => {
+                self.depth = 0;
+                Poll::Pending
+            },
+            Poll::Ready(Err(error)) => {
+                log::error!("{}", error);
+                Poll::Ready(None)
+            },
+            Poll::Ready(Ok(mut guard)) => {
+                match guard.try_io(|inner| inner.get_mut().read()) {
+                    Ok(Ok(data)) => {
+                        self.depth = 0;
+                        Poll::Ready(Some(data))
+                    },
+                    Ok(Err(error)) => {
+                        log::error!("{}", error);
+                        Poll::Ready(None)
+                    },
+                    Err(_) => {
+                        self.depth += 1;
+                        self.poll_next(cx)
+                    },
+                }
+            },
         }
     }
 }
