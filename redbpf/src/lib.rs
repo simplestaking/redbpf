@@ -74,7 +74,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::MaybeUninit;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{RawFd, AsRawFd};
 
 pub use crate::error::{Error, Result};
 pub use crate::perf::*;
@@ -764,6 +764,12 @@ impl RelocationInfo {
         }
         code[insn_idx].imm = map.fd;
         Ok(())
+    }
+}
+
+impl AsRawFd for Map {
+    fn as_raw_fd(&self) -> i32 {
+        self.fd.clone()
     }
 }
 
