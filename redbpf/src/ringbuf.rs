@@ -47,6 +47,7 @@ struct RingBufferInner {
     consumer_pos: Box<AtomicUsize>,
     producer_pos: Box<AtomicUsize>,
     consumer_pos_value: usize,
+    last_reported_percent: usize,
     data: Box<[AtomicUsize]>,
 }
 
@@ -154,6 +155,7 @@ impl RingBufferInner {
             consumer_pos,
             producer_pos,
             consumer_pos_value: 0,
+            last_reported_percent: 0,
             data,
         })
     }
@@ -184,6 +186,18 @@ impl RingBufferInner {
             if self.consumer_pos_value >= pr_pos {
                 self.update_pos();
                 break Err(would_block_error);
+            } else {
+                let distance = pr_pos - self.consumer_pos_value;
+                let quant = (self.mask + 1) / 100;
+                let percent = distance / quant;
+                if percent > self.last_reported_percent {
+                    log::warn!("the buffer is filled by: {}, increasing", percent);
+                    self.last_reported_percent = percent;
+                } else if percent < self.last_reported_percent {
+                    log::info!("the buffer is filled by: {}, decreasing", percent);
+                    self.last_reported_percent = percent;
+
+                }
             }
 
             let (length, data_offset) = {
