@@ -214,7 +214,7 @@ impl RingBufferInner {
             }
 
             let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
-            self.consumer_pos_value += HEADER_SIZE + (length + 7) / 8 * 8;
+            self.consumer_pos_value = data_offset + (length + 7) / 8 * 8;
 
             if !discard {
                 let data = unsafe {
