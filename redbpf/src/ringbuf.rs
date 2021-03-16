@@ -16,7 +16,6 @@ use tokio::io::{Interest, unix::AsyncFd};
 /// it is possible to fix, and consume data in parallel.
 pub struct RingBufferData {
     data: Box<[u8]>,
-    end_position: usize,
 }
 
 impl AsRef<[u8]> for RingBufferData {
@@ -27,7 +26,6 @@ impl AsRef<[u8]> for RingBufferData {
 
 impl Drop for RingBufferData {
     fn drop(&mut self) {
-        let _ = self.end_position;
         let data = mem::replace(&mut self.data, Box::new([]));
         mem::forget(data);
     }
@@ -214,17 +212,14 @@ impl RingBufferInner {
             }
 
             let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
-            self.consumer_pos_value = data_offset + (length + 7) / 8 * 8;
+            self.consumer_pos_value += HEADER_SIZE + (length + 7) / 8 * 8;
 
             if !discard {
                 let data = unsafe {
                     let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
                     Box::from_raw(slice as *mut [u8])
                 };
-                break Ok(RingBufferData {
-                    data,
-                    end_position: self.consumer_pos_value,
-                });
+                break Ok(RingBufferData { data });
             }
         }
     }
