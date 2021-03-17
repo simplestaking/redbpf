@@ -111,7 +111,6 @@ impl RingBufferInner {
                 return Err(io::Error::last_os_error());
             }
 
-            log::info!("consumer: 0x{:016x}", p as usize);
             Box::from_raw(p as *mut AtomicUsize)
         };
 
@@ -135,7 +134,6 @@ impl RingBufferInner {
                 return Err(io::Error::last_os_error());
             }
 
-            log::info!("producer: 0x{:016x}", p as usize);
             let length = max_length * 2 / mem::size_of::<AtomicUsize>();
             let q = (p as usize) + page_size;
             let q = slice::from_raw_parts_mut(q as *mut AtomicUsize, length);
@@ -166,10 +164,12 @@ impl RingBufferInner {
         }
     }
 
+    // store our position to notify kernel it can overwrite memory behind our position
     fn update_pos(&mut self) {
         self.consumer_pos.store(self.consumer_pos_value, Ordering::Release);
     }
 
+    // try to read a data slice from the ring buffer, advance our position
     fn read(&mut self) -> io::Result<RingBufferData> {
         const BUSY_BIT: usize = 1 << 31;
         const DISCARD_BIT: usize = 1 << 30;
@@ -177,50 +177,70 @@ impl RingBufferInner {
 
         let would_block_error = io::Error::new(io::ErrorKind::WouldBlock, "");
 
+        // if tokio runtime call this function, it means previous memory slice is consumed
+        // we can advance the position
         self.update_pos();
 
+        // try read something
         loop {
             let pr_pos = self.producer_pos.load(Ordering::Acquire);
-            if self.consumer_pos_value >= pr_pos {
+            if self.consumer_pos_value > pr_pos {
+                // it means we were read a slice of memory which wasn't written yet
+                break Err(io::Error::new(io::ErrorKind::Other, "read uninitialized data"));
+            } else if self.consumer_pos_value == pr_pos {
+                // nothing to read
+                // tell the kernel were we are
                 self.update_pos();
+                // wait for an event from the kernel
                 break Err(would_block_error);
             } else {
+                // determine how far we are, how many unseen data is in the buffer
                 let distance = pr_pos - self.consumer_pos_value;
                 let quant = (self.mask + 1) / 100;
                 let percent = distance / quant;
+                if percent >= 100 {
+                    log::error!("the buffer is overflow");
+                }
                 if percent > self.last_reported_percent {
-                    log::warn!("the buffer is filled by: {}, increasing", percent);
+                    log::warn!("the buffer is filled by: {}%, increasing", percent);
                     self.last_reported_percent = percent;
                 } else if percent < self.last_reported_percent {
-                    log::info!("the buffer is filled by: {}, decreasing", percent);
+                    log::info!("the buffer is filled by: {}%, decreasing", percent);
                     self.last_reported_percent = percent;
-
                 }
             }
 
-            let (length, data_offset) = {
+            // the first 8 bytes of the memory slice is a header (length and flags)
+            let (header, data_offset) = {
                 let masked_pos = self.consumer_pos_value & self.mask;
-                let reduced_pos = masked_pos / mem::size_of::<AtomicUsize>();
-                let length = self.data[reduced_pos].load(Ordering::Acquire);
+                let index_in_array = masked_pos / mem::size_of::<AtomicUsize>();
+                let header = self.data[index_in_array].load(Ordering::Acquire);
                 // keep only 32 bits
-                (length & 0xffffffff, masked_pos + HEADER_SIZE)
+                (header & 0xffffffff, masked_pos + HEADER_SIZE)
             };
 
-            if length & BUSY_BIT != 0 {
+            if header & BUSY_BIT != 0 {
+                // nothing to read, kernel is writing to this slice right now
+                // tell the kernel were we are
                 self.update_pos();
+                // wait for an event from the kernel
                 break Err(would_block_error);
             }
 
-            let (length, discard) = (length & !DISCARD_BIT, (length & DISCARD_BIT) != 0);
+            let (length, discard) = (header & !DISCARD_BIT, (header & DISCARD_BIT) != 0);
+
+            // align the length by 8, and advance our position
             self.consumer_pos_value += HEADER_SIZE + (length + 7) / 8 * 8;
 
             if !discard {
+                // if not discard, yield the slice
                 let data = unsafe {
                     let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
                     Box::from_raw(slice as *mut [u8])
                 };
                 break Ok(RingBufferData { data });
             }
+            // if kernel decide to discard this slice, go to the next iteration
         }
     }
 }
@@ -242,12 +262,15 @@ impl Stream for RingBuffer {
     type Item = RingBufferData;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        //log::warn!("enter {}", self.depth);
         if self.depth > 1 {
             log::warn!("depth: {}", self.depth);
         }
+        // poll io
         match self.inner.poll_read_ready_mut(cx) {
             Poll::Pending => {
                 self.depth = 0;
+                //log::warn!("pending");
                 Poll::Pending
             },
             Poll::Ready(Err(error)) => {
@@ -255,15 +278,21 @@ impl Stream for RingBuffer {
                 Poll::Ready(None)
             },
             Poll::Ready(Ok(mut guard)) => {
+                // have something, try to read
+                // it might be false ready, or busy slice
+                // in both cases `read` return `WouldBlock`
                 match guard.try_io(|inner| inner.get_mut().read()) {
                     Ok(Ok(data)) => {
                         self.depth = 0;
+                        //log::warn!("ready");
                         Poll::Ready(Some(data))
                     },
                     Ok(Err(error)) => {
                         log::error!("{}", error);
                         Poll::Ready(None)
                     },
+                    // `read` return `WouldBlock`
+                    // poll again as documentation of `try_io` suggesting
                     Err(_) => {
                         self.depth += 1;
                         self.poll_next(cx)
