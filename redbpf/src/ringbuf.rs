@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Write},
     ptr,
     slice,
     mem,
@@ -35,6 +35,47 @@ impl Drop for RingBufferData {
 pub struct RingBuffer {
     inner: AsyncFd<RingBufferInner>,
     depth: usize,
+    pending_order: usize,
+    report: Option<RingBufferReport>,
+}
+
+struct RingBufferReport {
+    inner: Vec<u8>,
+}
+
+impl RingBufferReport {
+    fn new() -> Self {
+        RingBufferReport {
+            inner: Vec::with_capacity(16 * 1024 * 1024),
+        }
+    }
+
+    fn on_poll(&mut self) {
+        self.inner.push(0x00);
+    }
+
+    fn on_pending(&mut self) {
+        self.inner.push(0x01);
+    }
+
+    fn on_ready(&mut self) {
+        self.inner.push(0x02);
+    }
+
+    fn on_pos(&mut self, p_pos: usize, c_pos: usize) {
+        self.inner.push(0x03);
+        self.inner.extend_from_slice(&(c_pos as u64).to_be_bytes());
+        self.inner.extend_from_slice(&(p_pos as u64).to_be_bytes());
+    }
+}
+
+impl Drop for RingBufferReport {
+    fn drop(&mut self) {
+        if !self.inner.is_empty() {
+            let mut f = std::fs::File::create("target/rb_report").unwrap();
+            f.write_all(&self.inner).unwrap();
+        }
+    }
 }
 
 struct RingBufferInner {
@@ -80,7 +121,12 @@ impl RingBuffer {
     pub fn new(fd: i32, max_length: usize) -> io::Result<Self> {
         let inner = RingBufferInner::new(fd, max_length)?;
         let inner = AsyncFd::with_interest(inner, Interest::READABLE)?;
-        Ok(RingBuffer { inner, depth: 0 })
+        Ok(RingBuffer { inner, depth: 0, pending_order: 0, report: None })
+    }
+
+    pub fn with_report(mut self) -> Self {
+        self.report = Some(RingBufferReport::new());
+        self
     }
 
     pub fn dump(&self) -> RingBufferDump {
@@ -262,7 +308,7 @@ impl Stream for RingBuffer {
     type Item = RingBufferData;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        //log::warn!("enter {}", self.depth);
+        self.report.as_mut().map(RingBufferReport::on_poll);
         if self.depth > 1 {
             log::warn!("depth: {}", self.depth);
         }
@@ -270,7 +316,14 @@ impl Stream for RingBuffer {
         match self.inner.poll_read_ready_mut(cx) {
             Poll::Pending => {
                 self.depth = 0;
-                //log::warn!("pending");
+                self.pending_order += 1;
+                if self.pending_order >= 3 {
+                    log::warn!("too many pending {}", self.pending_order);
+                    let p_pos = self.inner.get_ref().producer_pos.load(Ordering::SeqCst);
+                    let c_pos = self.inner.get_ref().consumer_pos_value;
+                    self.report.as_mut().map(|r| r.on_pos(p_pos, c_pos));
+                }
+                self.report.as_mut().map(RingBufferReport::on_pending);
                 Poll::Pending
             },
             Poll::Ready(Err(error)) => {
@@ -284,7 +337,8 @@ impl Stream for RingBuffer {
                 match guard.try_io(|inner| inner.get_mut().read()) {
                     Ok(Ok(data)) => {
                         self.depth = 0;
-                        //log::warn!("ready");
+                        self.pending_order = 0;
+                        self.report.as_mut().map(RingBufferReport::on_ready);
                         Poll::Ready(Some(data))
                     },
                     Ok(Err(error)) => {
