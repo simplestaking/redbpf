@@ -28,7 +28,7 @@ fn main() {
         None => process::exit(1),
     };
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let _ = runtime.block_on(async {
         let mut loader = Loader::load(probe_code()).expect("error loading probe");
 

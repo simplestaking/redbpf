@@ -24,6 +24,7 @@
         "revents",
         "ringbuf",
         "rustc",
+        "smallvec",
         "sockaddr",
         "stddef",
         "syscall",

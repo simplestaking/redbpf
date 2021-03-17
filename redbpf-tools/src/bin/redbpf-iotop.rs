@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio;
 use tokio::runtime::Runtime;
 use tokio::signal;
-use tokio::time::delay_for;
+use tokio::time;
 
 use probes::iotop::{Counter, CounterKey};
 
@@ -25,7 +25,7 @@ fn main() {
         process::exit(-1);
     }
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let _ = runtime.block_on(async {
         // load the BPF programs and maps
         let mut loader = Loader::load(probe_code()).expect("error loading probe");
@@ -43,7 +43,7 @@ fn main() {
             let disks = parse_diskstats().unwrap();
 
             loop {
-                delay_for(Duration::from_millis(1000)).await;
+                time::sleep(Duration::from_millis(1000)).await;
 
                 println!(
                     "{:6} {:16} {:1} {:3} {:3} {:8} {:>5} {:>7} {:>6}",

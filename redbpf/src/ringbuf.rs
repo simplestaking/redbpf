@@ -10,6 +10,7 @@ use std::{
 };
 use futures::Stream;
 use tokio::io::{Interest, unix::AsyncFd};
+use smallvec::SmallVec;
 
 /// The data read from the `RingBuffer`.
 /// TODO: `RingBuffer` unable to read more data until this is not consumed,
@@ -216,7 +217,7 @@ impl RingBufferInner {
     }
 
     // try to read a data slice from the ring buffer, advance our position
-    fn read(&mut self) -> io::Result<RingBufferData> {
+    fn read(&mut self) -> io::Result<SmallVec<[RingBufferData; 64]>> {
         const BUSY_BIT: usize = 1 << 31;
         const DISCARD_BIT: usize = 1 << 30;
         const HEADER_SIZE: usize = 8;
@@ -227,18 +228,19 @@ impl RingBufferInner {
         // we can advance the position
         self.update_pos();
 
+        let mut vec = SmallVec::new();
+
         // try read something
         loop {
             let pr_pos = self.producer_pos.load(Ordering::Acquire);
             if self.consumer_pos_value > pr_pos {
                 // it means we were read a slice of memory which wasn't written yet
-                break Err(io::Error::new(io::ErrorKind::Other, "read uninitialized data"));
+                return Err(io::Error::new(io::ErrorKind::Other, "read uninitialized data"));
             } else if self.consumer_pos_value == pr_pos {
-                // nothing to read
+                // nothing to read more
                 // tell the kernel were we are
                 self.update_pos();
-                // wait for an event from the kernel
-                break Err(would_block_error);
+                break;
             } else {
                 // determine how far we are, how many unseen data is in the buffer
                 let distance = pr_pos - self.consumer_pos_value;
@@ -269,8 +271,7 @@ impl RingBufferInner {
                 // nothing to read, kernel is writing to this slice right now
                 // tell the kernel were we are
                 self.update_pos();
-                // wait for an event from the kernel
-                break Err(would_block_error);
+                break;
             }
 
             let (length, discard) = (header & !DISCARD_BIT, (header & DISCARD_BIT) != 0);
@@ -284,9 +285,15 @@ impl RingBufferInner {
                     let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
                     Box::from_raw(slice as *mut [u8])
                 };
-                break Ok(RingBufferData { data });
+                vec.push(RingBufferData { data });
             }
             // if kernel decide to discard this slice, go to the next iteration
+        };
+
+        if vec.is_empty() {
+            Err(would_block_error)
+        } else {
+            Ok(vec)
         }
     }
 }
@@ -305,7 +312,7 @@ impl Drop for RingBufferInner {
 }
 
 impl Stream for RingBuffer {
-    type Item = RingBufferData;
+    type Item = SmallVec<[RingBufferData; 64]>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         self.report.as_mut().map(RingBufferReport::on_poll);
