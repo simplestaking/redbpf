@@ -3,7 +3,7 @@ use std::{
     ptr,
     slice,
     mem,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{Arc, atomic::{AtomicUsize, Ordering}},
     task::{Context, Poll},
     pin::Pin,
     os::unix::io::AsRawFd,
@@ -82,13 +82,10 @@ impl Drop for RingBufferReport {
 struct RingBufferInner {
     fd: i32,
     mask: usize,
-    page_size: usize,
-    // pointers to shared memory
-    consumer_pos: Box<AtomicUsize>,
-    producer_pos: Box<AtomicUsize>,
     consumer_pos_value: usize,
     last_reported_percent: usize,
-    data: Box<[AtomicUsize]>,
+    // pointers to shared memory
+    observer: Arc<RingBufferObserver>,
 }
 
 impl AsRawFd for RingBufferInner {
@@ -97,15 +94,30 @@ impl AsRawFd for RingBufferInner {
     }
 }
 
-pub struct RingBufferDump {
-    data: *const u8,
-    length: usize,
-    pub pos: usize,
+pub struct RingBufferObserver {
+    page_size: usize,
+    data: Box<[AtomicUsize]>,
+    consumer_pos: Box<AtomicUsize>,
+    producer_pos: Box<AtomicUsize>,
 }
 
-impl AsRef<[u8]> for RingBufferDump {
+impl RingBufferObserver {
+    pub fn consumer_pos(&self) -> usize {
+        self.consumer_pos.load(Ordering::SeqCst)
+    }
+
+    pub fn producer_pos(&self) -> usize {
+        self.producer_pos.load(Ordering::SeqCst)
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len() * mem::size_of::<AtomicUsize>()
+    }
+}
+
+impl AsRef<[u8]> for RingBufferObserver {
     fn as_ref(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.data, self.length) }
+        unsafe { slice::from_raw_parts(self.data.as_ptr() as *const u8, self.len()) }
     }
 }
 
@@ -122,7 +134,12 @@ impl RingBuffer {
     pub fn new(fd: i32, max_length: usize) -> io::Result<Self> {
         let inner = RingBufferInner::new(fd, max_length)?;
         let inner = AsyncFd::with_interest(inner, Interest::READABLE)?;
-        Ok(RingBuffer { inner, depth: 0, pending_order: 0, report: None })
+        Ok(RingBuffer {
+            inner,
+            depth: 0,
+            pending_order: 0,
+            report: None,
+        })
     }
 
     pub fn with_report(mut self) -> Self {
@@ -130,8 +147,8 @@ impl RingBuffer {
         self
     }
 
-    pub fn dump(&self) -> RingBufferDump {
-        self.inner.get_ref().dump()
+    pub fn observer(&self) -> Arc<RingBufferObserver> {
+        self.inner.get_ref().observer.clone()
     }
 }
 
@@ -194,26 +211,20 @@ impl RingBufferInner {
         Ok(RingBufferInner {
             fd,
             mask: max_length - 1,
-            page_size,
-            consumer_pos,
-            producer_pos,
             consumer_pos_value: 0,
             last_reported_percent: 0,
-            data,
+            observer: Arc::new(RingBufferObserver {
+                page_size,
+                consumer_pos,
+                producer_pos,
+                data,
+            })
         })
-    }
-
-    fn dump(&self) -> RingBufferDump {
-        RingBufferDump {
-            data: self.data.as_ptr() as *const u8,
-            length: self.producer_pos.load(Ordering::SeqCst),
-            pos: self.consumer_pos.load(Ordering::SeqCst),
-        }
     }
 
     // store our position to notify kernel it can overwrite memory behind our position
     fn update_pos(&mut self) {
-        self.consumer_pos.store(self.consumer_pos_value, Ordering::Release);
+        self.observer.consumer_pos.store(self.consumer_pos_value, Ordering::Release);
     }
 
     // try to read a data slice from the ring buffer, advance our position
@@ -232,7 +243,7 @@ impl RingBufferInner {
 
         // try read something
         loop {
-            let pr_pos = self.producer_pos.load(Ordering::Acquire);
+            let pr_pos = self.observer.producer_pos.load(Ordering::Acquire);
             if self.consumer_pos_value > pr_pos {
                 // it means we were read a slice of memory which wasn't written yet
                 return Err(io::Error::new(io::ErrorKind::Other, "read uninitialized data"));
@@ -262,7 +273,7 @@ impl RingBufferInner {
             let (header, data_offset) = {
                 let masked_pos = self.consumer_pos_value & self.mask;
                 let index_in_array = masked_pos / mem::size_of::<AtomicUsize>();
-                let header = self.data[index_in_array].load(Ordering::Acquire);
+                let header = self.observer.data[index_in_array].load(Ordering::Acquire);
                 // keep only 32 bits
                 (header & 0xffffffff, masked_pos + HEADER_SIZE)
             };
@@ -282,7 +293,10 @@ impl RingBufferInner {
             if !discard {
                 // if not discard, yield the slice
                 let data = unsafe {
-                    let slice = slice::from_raw_parts_mut(((self.data.as_ptr() as usize) + data_offset) as *mut u8, length);
+                    let slice = slice::from_raw_parts_mut(
+                        ((self.observer.data.as_ptr() as usize) + data_offset) as *mut u8,
+                        length,
+                    );
                     Box::from_raw(slice as *mut [u8])
                 };
                 vec.push(RingBufferData { data });
@@ -298,14 +312,14 @@ impl RingBufferInner {
     }
 }
 
-impl Drop for RingBufferInner {
+impl Drop for RingBufferObserver {
     fn drop(&mut self) {
         let p = mem::replace(&mut self.consumer_pos, Box::new(AtomicUsize::new(0)));
         let q = mem::replace(&mut self.producer_pos, Box::new(AtomicUsize::new(0)));
         let data = mem::replace(&mut self.data, Box::new([]));
         unsafe {
             libc::munmap(Box::into_raw(p) as *mut _, self.page_size);
-            libc::munmap(Box::into_raw(q) as *mut _, self.page_size + (self.mask + 1) * 2);
+            libc::munmap(Box::into_raw(q) as *mut _, self.page_size + self.len());
         }
         Box::leak(data);
     }
@@ -326,7 +340,7 @@ impl Stream for RingBuffer {
                 self.pending_order += 1;
                 if self.pending_order >= 3 {
                     log::warn!("too many pending {}", self.pending_order);
-                    let p_pos = self.inner.get_ref().producer_pos.load(Ordering::SeqCst);
+                    let p_pos = self.inner.get_ref().observer.producer_pos.load(Ordering::SeqCst);
                     let c_pos = self.inner.get_ref().consumer_pos_value;
                     self.report.as_mut().map(|r| r.on_pos(p_pos, c_pos));
                 }
