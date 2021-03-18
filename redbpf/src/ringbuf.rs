@@ -314,12 +314,13 @@ impl RingBufferInner {
 
 impl Drop for RingBufferObserver {
     fn drop(&mut self) {
+        let len = self.len();
         let p = mem::replace(&mut self.consumer_pos, Box::new(AtomicUsize::new(0)));
         let q = mem::replace(&mut self.producer_pos, Box::new(AtomicUsize::new(0)));
         let data = mem::replace(&mut self.data, Box::new([]));
         unsafe {
             libc::munmap(Box::into_raw(p) as *mut _, self.page_size);
-            libc::munmap(Box::into_raw(q) as *mut _, self.page_size + self.len());
+            libc::munmap(Box::into_raw(q) as *mut _, self.page_size + len);
         }
         Box::leak(data);
     }
