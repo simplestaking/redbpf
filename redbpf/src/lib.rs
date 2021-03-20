@@ -54,10 +54,6 @@ mod perf;
 mod symbols;
 pub mod sys;
 pub mod xdp;
-#[cfg(feature = "load")]
-pub mod ringbuf;
-#[cfg(feature = "load")]
-pub mod ringbuf_sync;
 
 pub use bpf_sys::uname;
 use bpf_sys::{

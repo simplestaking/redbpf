@@ -63,6 +63,5 @@ impl Stream for PerfMessageStream {
                 Poll::Ready(None)
             },
         }
-
     }
 }
