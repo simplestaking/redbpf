@@ -26,7 +26,7 @@ where
 /// The `RingBuffer` userspace object.
 #[must_use = "streams do nothing unless polled"]
 pub struct RingBuffer<D> {
-    inner: AsyncFd<RingBufferInner>,
+    inner: AsyncFd<RingBufferSync>,
     depth: usize,
     pending_order: usize,
     report: Option<RingBufferReport>,
@@ -72,7 +72,7 @@ impl Drop for RingBufferReport {
     }
 }
 
-struct RingBufferInner {
+pub struct RingBufferSync {
     fd: i32,
     mask: usize,
     consumer_pos_value: usize,
@@ -81,7 +81,7 @@ struct RingBufferInner {
     observer: Arc<RingBufferObserver>,
 }
 
-impl AsRawFd for RingBufferInner {
+impl AsRawFd for RingBufferSync {
     fn as_raw_fd(&self) -> i32 {
         self.fd.clone()
     }
@@ -125,7 +125,7 @@ impl<D> RingBuffer<D> {
 
     /// Create the buffer, `fd` is the file descriptor, `max_length` should be power of two.
     pub fn new(fd: i32, max_length: usize) -> io::Result<Self> {
-        let inner = RingBufferInner::new(fd, max_length)?;
+        let inner = RingBufferSync::new(fd, max_length)?;
         let inner = AsyncFd::with_interest(inner, Interest::READABLE)?;
         Ok(RingBuffer {
             inner,
@@ -146,8 +146,16 @@ impl<D> RingBuffer<D> {
     }
 }
 
-impl RingBufferInner {
-    fn new(fd: i32, max_length: usize) -> io::Result<Self> {
+impl RingBufferSync {
+    /// Create the buffer from redbpf `Map` object.
+    pub fn from_map(map: &crate::Map) -> Result<Self, io::Error> {
+        let fd = map.fd;
+        let max_length = map.config.max_entries as usize;
+        debug_assert_eq!(map.kind, 27);
+        Self::new(fd, max_length)
+    }
+
+    pub fn new(fd: i32, max_length: usize) -> io::Result<Self> {
         debug_assert_eq!(max_length & (max_length - 1), 0);
 
         // it is a constant, most likely 0x1000
@@ -202,7 +210,7 @@ impl RingBufferInner {
         };
 
         log::info!("new RingBuffer: fd: {}, page_size: 0x{:016x}, mask: 0x{:016x}", fd, page_size, max_length - 1);
-        Ok(RingBufferInner {
+        Ok(RingBufferSync {
             fd,
             mask: max_length - 1,
             consumer_pos_value: 0,
@@ -297,6 +305,41 @@ impl RingBufferInner {
             Err(io::Error::new(io::ErrorKind::WouldBlock, ""))
         } else {
             Ok(vec)
+        }
+    }
+
+    fn wait(&mut self) {
+        let mut fds = libc::pollfd {
+            fd: self.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            match unsafe { libc::poll(&mut fds, 1, 100) } {
+                0 => log::debug!("ringbuf wait timeout"),
+                1 => {
+                    if fds.revents & libc::POLLIN != 0 {
+                        break;
+                    }
+                },
+                i32::MIN..=-1 => log::error!("ringbuf error: {:?}", io::Error::last_os_error()),
+                // poll should not return bigger then number of fds, we have 1
+                r @ 2..=i32::MAX => log::error!("ringbuf poll {}, {:?}", r, io::Error::last_os_error()),
+            }
+            fds.revents = 0;
+        }
+    }
+
+    pub fn read_blocking<D>(&mut self) -> io::Result<SmallVec<[D; 64]>>
+    where
+        D: RingBufferData,
+    {
+        match self.read() {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                self.wait();
+                self.read()
+            },
+            x => x,
         }
     }
 }
